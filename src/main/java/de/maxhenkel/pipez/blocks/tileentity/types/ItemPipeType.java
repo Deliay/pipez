@@ -20,8 +20,7 @@ import net.minecraftforge.items.IItemHandler;
 import net.minecraftforge.items.ItemHandlerHelper;
 
 import javax.annotation.Nullable;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 import java.util.stream.Collectors;
 
 public class ItemPipeType extends PipeType<Item> {
@@ -136,15 +135,16 @@ public class ItemPipeType extends PipeType<Item> {
     protected void insertOrdered(PipeLogicTileEntity tileEntity, Direction side, List<PipeTileEntity.Connection> connections, IItemHandler itemHandler) {
         int itemsToTransfer = getRate(tileEntity, side);
 
-        ArrayList<ItemStack> nonFittingItems = new ArrayList<>();
+        Map<Map.Entry<Item, CompoundTag>, List<ItemStack>> nonFittingItemMap = new HashMap<>();
 
         connectionLoop:
         for (PipeTileEntity.Connection connection : connections) {
-            nonFittingItems.clear();
-            IItemHandler destination = connection.getItemHandler(tileEntity.getLevel()).orElse(null);
-            if (destination == null) {
+            nonFittingItemMap.clear();
+            var destinationOptional = connection.getItemHandler(tileEntity.getLevel());
+            if (!destinationOptional.isPresent()) {
                 continue;
             }
+            IItemHandler destination = connection.getItemHandler(tileEntity.getLevel()).orElse(null);
             if (isFull(destination)) {
                 continue;
             }
@@ -153,19 +153,34 @@ public class ItemPipeType extends PipeType<Item> {
                     break connectionLoop;
                 }
                 ItemStack simulatedExtract = itemHandler.extractItem(i, itemsToTransfer, true);
+                Item item = simulatedExtract.getItem();
                 if (simulatedExtract.isEmpty()) {
                     continue;
                 }
+                // get unique item+tags to do pre-filter, this can avoid iterate a lots of non-fitting items
+                Map.Entry<Item, CompoundTag> uniqueEntry = new AbstractMap.SimpleImmutableEntry<>(item, simulatedExtract.getTag());
+
+                // The difference between #218 and this, there are still call ItemUtils#isStackable check
+                // to category matched items.
+                List<ItemStack> nonFittingItems = nonFittingItemMap.getOrDefault(uniqueEntry, Collections.emptyList());
                 if (nonFittingItems.stream().anyMatch(stack -> ItemUtils.isStackable(stack, simulatedExtract))) {
                     continue;
                 }
+
                 if (canInsert(connection, simulatedExtract, tileEntity.getFilters(side, this)) == tileEntity.getFilterMode(side, this).equals(UpgradeTileEntity.FilterMode.BLACKLIST)) {
                     continue;
                 }
                 ItemStack stack = ItemHandlerHelper.insertItem(destination, simulatedExtract, false);
                 int insertedAmount = simulatedExtract.getCount() - stack.getCount();
                 if (insertedAmount <= 0) {
-                    nonFittingItems.add(simulatedExtract);
+                    if (!simulatedExtract.isEmpty()) {
+
+                        // get category of simulatedExtract and insert it into cache
+                        if (!nonFittingItemMap.containsKey(uniqueEntry)) {
+                            nonFittingItemMap.put(uniqueEntry, new ArrayList<>());
+                        }
+                        nonFittingItemMap.get(uniqueEntry).add(simulatedExtract);
+                    }
                 }
                 itemsToTransfer -= insertedAmount;
                 itemHandler.extractItem(i, insertedAmount, false);
